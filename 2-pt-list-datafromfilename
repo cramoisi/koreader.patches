@@ -1,0 +1,110 @@
+--[[
+    Project: Title – Filename metadata override (Cover List & Details List mode)
+    ------------------------------------------------------------
+    Affiche Titre & Auteur à partir du nom de fichier SANS activer "filename only".
+    Formats pris en charge :
+      - "Nom, Prénom - Titre du livre.ext"
+      - "Nom, Prénom - Titre de la série #n - Titre du livre.ext"
+--]]
+
+local userpatch = require("userpatch")
+
+local function parse_from_filename(filepath)
+    local util = require("util")
+    local filemanagerutil = require("apps/filemanager/filemanagerutil")
+
+    local _, filename = util.splitFilePathName(filepath)
+    local basename, _ext = filemanagerutil.splitFileNameType(filename)
+
+    -- 1) Séparer Auteur vs le reste:  "Auteur - reste"
+    local author_part, rest = basename:match("^(.-)%s*%-%s*(.+)$")
+    if not author_part or not rest then
+        return nil -- format non conforme
+    end
+
+    -- 2) Option série : "Série #n - Titre"  OU pas de série -> "Titre"
+    local series_part, title_part = rest:match("^(.-)%s*%-%s*(.+)$")
+    local series_name, series_index, title
+
+    if series_part and title_part then
+        -- Cherche un #n à la fin du bloc série
+        local sname, sindex = series_part:match("^(.-)%s*#%s*(%d+)%s*$")
+        if sname and sindex then
+            series_name = (sname:gsub("%s+$", ""))
+            series_index = tonumber(sindex)
+            title = title_part
+        else
+            -- Il y a un " - ", mais pas de "#n": on considère que tout est dans le titre.
+            title = rest
+        end
+    else
+        -- Pas de " - " supplémentaire: tout le reste est le titre
+        title = rest
+    end
+
+    -- Nettoyages légers
+    title = title and title:gsub("^%s+", ""):gsub("%s+$", "")
+    author_part = author_part and author_part:gsub("^%s+", ""):gsub("%s+$", "")
+    if series_name then
+        series_name = series_name:gsub("^%s+", ""):gsub("%s+$", "")
+    end
+
+    -- On retourne un tableau 'authors' tel qu’attendu par ptutil.formatAuthors()
+    -- (une liste de chaînes "Nom, Prénom" suffit pour Project: Title)
+    return {
+        title = title,
+        authors = author_part,
+        series = series_name,
+        series_index = series_index,
+    }
+end
+
+local function patchCoverBrowser(_plugin)
+    -- Récupère la classe interne ListMenuItem utilisée par listmenu.lua
+    local listmenu = require("listmenu")
+    local ListMenuItem = userpatch.getUpValue(listmenu._updateItemsBuildUI, "ListMenuItem")
+    if not ListMenuItem then return end
+
+    local BookInfoManager = require("bookinfomanager")
+    local orig_ListMenuItem_update = ListMenuItem.update
+
+    ListMenuItem.update = function(self)
+        -- On veut ce patch en mode "DetailList" (pas filename-only, pas pathchooser)
+        -- Si l’utilisateur force "filename only", on ne touche à rien.
+        if self.do_filename_only then
+            return orig_ListMenuItem_update(self)
+        end
+
+        -- On wrap temporairement BookInfoManager.getBookInfo pour injecter nos champs
+        local orig_getBookInfo = BookInfoManager.getBookInfo
+        BookInfoManager.getBookInfo = function(bim, path, want_cover)
+            local bi = orig_getBookInfo(bim, path, want_cover)
+
+            -- Ne modifie que l’élément en cours
+            if path == self.filepath and not self.is_directory then
+                local parsed = parse_from_filename(path)
+                if parsed and parsed.title and parsed.authors then
+                    -- Injecte le titre/auteur (et série si dispo) depuis le nom de fichier
+                    bi.title = parsed.title
+                    bi.authors = parsed.authors
+                    if parsed.series then
+                        bi.series = parsed.series
+                        bi.series_index = parsed.series_index
+                    end
+                    -- S’assurer que le plugin n’ignore pas nos métadonnées
+                    bi.ignore_meta = false
+                end
+            end
+            return bi
+        end
+
+        -- Appel de la version originale (qui utilisera nos valeurs)
+        orig_ListMenuItem_update(self)
+
+        -- Restaure la fonction d’origine pour ne pas impacter d’autres écrans
+        BookInfoManager.getBookInfo = orig_getBookInfo
+    end
+end
+
+-- Enregistre le patch pour le navigateur de couvertures/listes du plugin
+userpatch.registerPatchPluginFunc("coverbrowser", patchCoverBrowser)
