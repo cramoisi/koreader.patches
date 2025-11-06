@@ -8,103 +8,111 @@
 --]]
 
 local userpatch = require("userpatch")
+local function safe_parse_from_filename(path)
+    -- ultra tolérant, ne jette jamais d'erreur
+    local ok, res = pcall(function()
+        if type(path) ~= "string" or path == "" then return nil end
+        local util = require("util")
+        local filemanagerutil = require("apps/filemanager/filemanagerutil")
+        local _, filename = util.splitFilePathName(path or "")
+        if not filename or filename == "" then return nil end
+        local basename = filemanagerutil.splitFileNameType(filename)
+        if type(basename) == "table" then basename = basename[1] end
+        basename = tostring(basename or "")
 
-local function parse_from_filename(filepath)
-    local util = require("util")
-    local filemanagerutil = require("apps/filemanager/filemanagerutil")
+        local author_part, rest = basename:match("^(.-)%s*%-%s*(.+)$")
+        if not author_part or not rest then return nil end
 
-    local _, filename = util.splitFilePathName(filepath)
-    local basename, _ext = filemanagerutil.splitFileNameType(filename)
+        local series_part, title_part = rest:match("^(.-)%s*%-%s*(.+)$")
+        local series_name, series_index, title
 
-    -- 1) Séparer Auteur vs le reste:  "Auteur - reste"
-    local author_part, rest = basename:match("^(.-)%s*%-%s*(.+)$")
-    if not author_part or not rest then
-        return nil -- format non conforme
-    end
+        if series_part and title_part then
+            local sname, sidx =
+                series_part:match("^(.-)%s*[#№]?(%d+)%s*$")
+                or (function()
+                        local block = series_part:match("^(.-)%s*([IVXLCDM]+)%s*$")
+                        if block then
+                            local sn = series_part:match("^(.-)%s*[IVXLCDM]+%s*$")
+                            local rn = series_part:match("([IVXLCDM]+)%s*$")
+                            return sn, rn
+                        end
+                    end)()
 
-    -- 2) Option série : "Série #n - Titre"  OU pas de série -> "Titre"
-    local series_part, title_part = rest:match("^(.-)%s*%-%s*(.+)$")
-    local series_name, series_index, title
-
-    if series_part and title_part then
-        -- Cherche un #n à la fin du bloc série
-        local sname, sindex = series_part:match("^(.-)%s*#%s*(%d+)%s*$")
-        if sname and sindex then
-            series_name = (sname:gsub("%s+$", ""))
-            series_index = tonumber(sindex)
-            title = title_part
+            if sname and sidx then
+                local function roman_to_int(r)
+                    local m={I=1,V=5,X=10,L=50,C=100,D=500,M=1000}
+                    local t,p=0,0
+                    for i=#r,1,-1 do
+                        local v=m[r:sub(i,i)] or 0
+                        if v<p then t=t-v else t=t+v; p=v end
+                    end
+                    return t>0 and t or nil
+                end
+                series_name = (sname:gsub("%s+$",""))
+                series_index = tonumber(sidx) or roman_to_int(sidx)
+                title = title_part
+            else
+                title = rest
+            end
         else
-            -- Il y a un " - ", mais pas de "#n": on considère que tout est dans le titre.
             title = rest
         end
-    else
-        -- Pas de " - " supplémentaire: tout le reste est le titre
-        title = rest
-    end
 
-    -- Nettoyages légers
-    title = title and title:gsub("^%s+", ""):gsub("%s+$", "")
-    author_part = author_part and author_part:gsub("^%s+", ""):gsub("%s+$", "")
-    if series_name then
-        series_name = series_name:gsub("^%s+", ""):gsub("%s+$", "")
-    end
+        local function trim(s) return s and s:gsub("^%s+",""):gsub("%s+$","") or s end
+        author_part = trim(author_part); title = trim(title); if series_name then series_name = trim(series_name) end
+        if not author_part or author_part=="" or not title or title=="" then return nil end
 
-    -- On retourne un tableau 'authors' tel qu’attendu par ptutil.formatAuthors()
-    -- (une liste de chaînes "Nom, Prénom" suffit pour Project: Title)
-    return {
-        title = title,
-        authors = author_part,
-        series = series_name,
-        series_index = series_index,
-    }
+        return { title=title, author=author_part, series=series_name, series_index=series_index }
+    end)
+    if ok then return res end
+    return nil
 end
 
 local function patchCoverBrowser(_plugin)
-    -- Récupère la classe interne ListMenuItem utilisée par listmenu.lua
     local listmenu = require("listmenu")
     local ListMenuItem = userpatch.getUpValue(listmenu._updateItemsBuildUI, "ListMenuItem")
     if not ListMenuItem then return end
-
     local BookInfoManager = require("bookinfomanager")
     local orig_ListMenuItem_update = ListMenuItem.update
 
     ListMenuItem.update = function(self)
-        -- On veut ce patch en mode "DetailList" (pas filename-only, pas pathchooser)
-        -- Si l’utilisateur force "filename only", on ne touche à rien.
-        if self.do_filename_only then
+        -- Pas en filename-only, et l’item doit avoir un filepath exploitable
+        if self.do_filename_only or not self or type(self.filepath) ~= "string" or self.filepath == "" or self.is_directory then
             return orig_ListMenuItem_update(self)
         end
 
-        -- On wrap temporairement BookInfoManager.getBookInfo pour injecter nos champs
-        local orig_getBookInfo = BookInfoManager.getBookInfo
-        BookInfoManager.getBookInfo = function(bim, path, want_cover)
-            local bi = orig_getBookInfo(bim, path, want_cover)
+        local orig_get = BookInfoManager.getBookInfo
+        local restored = false
+        local function restore()
+            if not restored then
+                BookInfoManager.getBookInfo = orig_get
+                restored = true
+            end
+        end
 
-            -- Ne modifie que l’élément en cours
-            if path == self.filepath and not self.is_directory then
-                local parsed = parse_from_filename(path)
-                if parsed and parsed.title and parsed.authors then
-                    -- Injecte le titre/auteur (et série si dispo) depuis le nom de fichier
-                    bi.title = parsed.title
-                    bi.authors = parsed.authors
-                    if parsed.series then
+        BookInfoManager.getBookInfo = function(bim, path, want_cover)
+            local bi = orig_get(bim, path, want_cover)
+            if type(bi) ~= "table" then return bi end
+            if path == self.filepath then
+                local parsed = safe_parse_from_filename(path)
+                if parsed and parsed.title and parsed.author then
+                    bi.title   = parsed.title
+                    bi.authors = parsed.author   -- STRING attendue par ptutil
+                    if parsed.series and parsed.series_index then
                         bi.series = parsed.series
                         bi.series_index = parsed.series_index
                     end
-                    -- S’assurer que le plugin n’ignore pas nos métadonnées
                     bi.ignore_meta = false
                 end
             end
             return bi
         end
 
-        -- Appel de la version originale (qui utilisera nos valeurs)
-        orig_ListMenuItem_update(self)
-
-        -- Restaure la fonction d’origine pour ne pas impacter d’autres écrans
-        BookInfoManager.getBookInfo = orig_getBookInfo
+        -- Toujours restaurer, même si update plante
+        local ok, err = xpcall(function() orig_ListMenuItem_update(self) end, debug.traceback)
+        restore()
+        if not ok then error(err, 0) end
     end
 end
 
--- Enregistre le patch pour le navigateur de couvertures/listes du plugin
 userpatch.registerPatchPluginFunc("coverbrowser", patchCoverBrowser)
