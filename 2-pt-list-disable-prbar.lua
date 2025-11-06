@@ -1,15 +1,6 @@
 --[[
     Hide progress bar for "New" and "Finished" items in Project:Title list view,
     but KEEP the trophy icon for finished books.
-
-    How it works:
-      - Wrap ptutil.showProgressBar() to honor a one-shot flag.
-      - Before listmenu builds the row, we peek at status/percent and set that flag.
-      - When the flag is set, draw_progressbar is forced to false for that item only.
-
-    Tested with current Project:Title after KOReader update.
-    Author: ChatGPT (for Sébastien)
-    License: GNU AGPL v3
 --]]
 
 local userpatch = require("userpatch")
