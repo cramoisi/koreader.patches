@@ -1,118 +1,173 @@
+
 --[[
-    Project: Title – Filename metadata override (Cover List & Details List mode)
-    ------------------------------------------------------------
-    Affiche Titre & Auteur à partir du nom de fichier SANS activer "filename only".
-    Formats pris en charge :
-      - "Nom, Prénom - Titre du livre.ext"
-      - "Nom, Prénom - Titre de la série #n - Titre du livre.ext"
---]]
+  Project: Title — Unified Filename Parser (v5)
+  Handles Author, Title, Series, Index from filename using user's schema:
+
+    Nom, Prénom - [Série [#|n°]Index - ]Titre.ext
+    Variants:
+      Nom, Prénom - Titre
+      Nom, Prénom - Série - Titre
+      Nom, Prénom - Série n°3 - Titre
+      Nom, Prénom - Série #3 - Titre
+      Nom, Prénom, Titre (fallback comma form)
+
+  Notes:
+    - Never split on internal hyphens (Jean-Philippe, demi-lune, etc.).
+    - Unicode normalization of spaces, dashes, quotes, ZWSP, BOM.
+    - If parsing fails, metadata is left untouched.
+    - Series ignored if middle is only marker words (tome, vol, n°, etc.).
+]]
 
 local userpatch = require("userpatch")
-local function safe_parse_from_filename(path)
-    -- ultra tolérant, ne jette jamais d'erreur
-    local ok, res = pcall(function()
-        if type(path) ~= "string" or path == "" then return nil end
-        local util = require("util")
-        local filemanagerutil = require("apps/filemanager/filemanagerutil")
-        local _, filename = util.splitFilePathName(path or "")
-        if not filename or filename == "" then return nil end
-        local basename = filemanagerutil.splitFileNameType(filename)
-        if type(basename) == "table" then basename = basename[1] end
-        basename = tostring(basename or "")
 
-        local author_part, rest = basename:match("^(.-)%s*%-%s*(.+)$")
-        if not author_part or not rest then return nil end
+local function trim(s) return (s and s:gsub("^%s+",""):gsub("%s+$","")) end
 
-        local series_part, title_part = rest:match("^(.-)%s*%-%s*(.+)$")
-        local series_name, series_index, title
+-- Normalize Unicode variants to ASCII equivalents
+local function normalize(s)
+  if not s or s == "" then return s end
+  -- remove zero-width, soft hyphen, BOM
+  s = s
+    :gsub("\226\128[\139-\141]", "") -- ZWSP/ZWNJ/ZWJ
+    :gsub("\239\187\191", "") -- BOM
+    :gsub("\194\173", "") -- soft hyphen
+  -- normalize spaces
+  s = s
+    :gsub("\194\160", " ")
+    :gsub("\226\128[\136-\143]", " ") -- thin, narrow, en/em space
+  -- normalize dashes
+  s = s
+    :gsub("\226\128[\144-\148]", "-")
+    :gsub("\226\136\146", "-")
+  -- normalize apostrophes
+  s = s:gsub("[\226\128\152\226\128\153]", "'")
+  -- collapse multiple spaces
+  s = s:gsub(" +", " ")
+  -- keep only " - " for separators
+  s = s:gsub(" +%- +", " - ")
+  return trim(s)
+end
 
-        if series_part and title_part then
-            local sname, sidx =
-                series_part:match("^(.-)%s*[#№]?(%d+)%s*$")
-                or (function()
-                        local block = series_part:match("^(.-)%s*([IVXLCDM]+)%s*$")
-                        if block then
-                            local sn = series_part:match("^(.-)%s*[IVXLCDM]+%s*$")
-                            local rn = series_part:match("([IVXLCDM]+)%s*$")
-                            return sn, rn
-                        end
-                    end)()
+local function split_on_sds(name)
+  local parts, rest = {}, name
+  while true do
+    local i, j = rest:find(" %-% ")
+    if not i then break end
+    table.insert(parts, trim(rest:sub(1, i-1)))
+    rest = rest:sub(j+1)
+  end
+  table.insert(parts, trim(rest))
+  return parts
+end
 
-            if sname and sidx then
-                local function roman_to_int(r)
-                    local m={I=1,V=5,X=10,L=50,C=100,D=500,M=1000}
-                    local t,p=0,0
-                    for i=#r,1,-1 do
-                        local v=m[r:sub(i,i)] or 0
-                        if v<p then t=t-v else t=t+v; p=v end
-                    end
-                    return t>0 and t or nil
-                end
-                series_name = (sname:gsub("%s+$",""))
-                series_index = tonumber(sidx) or roman_to_int(sidx)
-                title = title_part
-            else
-                title = rest
-            end
-        else
-            title = rest
-        end
+local function ci_cleanup_markers(s)
+  local cleaned = s:gsub("[%s#]*%d+%s*$", "")
+  cleaned = cleaned
+    :gsub("[%s%p]*[Tt][Oo][Mm][Ee]%s*$", "")
+    :gsub("[%s%p]*[Vv][Oo][Ll]%.?%s*$", "")
+    :gsub("[%s%p]*[Ll][Ii][Vv][Rr][Ee]%s*$", "")
+    :gsub("[%s%p]*[Nn][%s%.°Ooº]*%s*$", "")
+  cleaned = cleaned:gsub("%s+$", "")
+  return cleaned
+end
 
-        local function trim(s) return s and s:gsub("^%s+",""):gsub("%s+$","") or s end
-        author_part = trim(author_part); title = trim(title); if series_name then series_name = trim(series_name) end
-        if not author_part or author_part=="" or not title or title=="" then return nil end
+local function parse_filename(basename)
+  local name = normalize(basename or ""):gsub("%.%w+$","")
+  local parts = split_on_sds(name)
 
-        return { title=title, author=author_part, series=series_name, series_index=series_index }
-    end)
-    if ok then return res end
-    return nil
+  -- fallback: comma form if no " - " found
+  if #parts == 1 and name:find(",") then
+    local a, t = name:match("^(.-),%s*(.-)$")
+    if a and t then
+      return trim(a), nil, trim(t)
+    end
+  end
+
+  if #parts < 2 then return nil, nil, nil, nil end
+
+  local author = parts[1]
+  local title = parts[#parts]
+  local middle = (#parts >= 3) and table.concat(parts, " - ", 2, #parts-1) or nil
+
+  local series, idx = nil, nil
+  if middle and middle ~= "" then
+    local raw = middle
+    local n = tonumber(raw:match("(%d+)%s*$"))
+    if n then
+      local sname = ci_cleanup_markers(raw)
+      sname = trim(sname or "")
+      if sname ~= "" and not sname:lower():match("^[%s%p]*(tome|vol%.?|livre|n[%.°oº]?)%s*$") then
+        series, idx = sname, n
+      end
+    else
+      if not raw:lower():match("^[%s%p]*(tome|vol%.?|livre|n[%.°oº]?)%s*$") then
+        series = trim(raw)
+      end
+    end
+  end
+
+  return trim(author), series, trim(title), idx
+end
+
+local function leaf(path)
+  return tostring(path or ""):gsub("[/\\]+$",""):match("([^/\\]+)$") or tostring(path or "")
+end
+
+local function base_noext(filename)
+  return tostring(filename or ""):gsub("%.%w+$","")
 end
 
 local function patchCoverBrowser(_plugin)
-    local listmenu = require("listmenu")
-    local ListMenuItem = userpatch.getUpValue(listmenu._updateItemsBuildUI, "ListMenuItem")
-    if not ListMenuItem then return end
-    local BookInfoManager = require("bookinfomanager")
-    local orig_ListMenuItem_update = ListMenuItem.update
+  local listmenu = require("listmenu")
+  local ListMenuItem = userpatch.getUpValue(listmenu._updateItemsBuildUI, "ListMenuItem")
+  if not ListMenuItem then return end
 
-    ListMenuItem.update = function(self)
-        -- Pas en filename-only, et l’item doit avoir un filepath exploitable
-        if self.do_filename_only or not self or type(self.filepath) ~= "string" or self.filepath == "" or self.is_directory then
-            return orig_ListMenuItem_update(self)
-        end
+  local BookInfoManager = require("bookinfomanager")
+  local util = require("util")
+  local filemanagerutil = require("apps/filemanager/filemanagerutil")
+  local orig_ListMenuItem_update = ListMenuItem.update
 
-        local orig_get = BookInfoManager.getBookInfo
-        local restored = false
-        local function restore()
-            if not restored then
-                BookInfoManager.getBookInfo = orig_get
-                restored = true
-            end
-        end
-
-        BookInfoManager.getBookInfo = function(bim, path, want_cover)
-            local bi = orig_get(bim, path, want_cover)
-            if type(bi) ~= "table" then return bi end
-            if path == self.filepath then
-                local parsed = safe_parse_from_filename(path)
-                if parsed and parsed.title and parsed.author then
-                    bi.title   = parsed.title
-                    bi.authors = parsed.author   -- STRING attendue par ptutil
-                    if parsed.series and parsed.series_index then
-                        bi.series = parsed.series
-                        bi.series_index = parsed.series_index
-                    end
-                    bi.ignore_meta = false
-                end
-            end
-            return bi
-        end
-
-        -- Toujours restaurer, même si update plante
-        local ok, err = xpcall(function() orig_ListMenuItem_update(self) end, debug.traceback)
-        restore()
-        if not ok then error(err, 0) end
+  ListMenuItem.update = function(self)
+    if self.do_filename_only or not self or type(self.filepath) ~= "string" or self.filepath == "" or self.is_directory then
+      return orig_ListMenuItem_update(self)
     end
+
+    local wanted_leaf = leaf(self.filepath)
+    local wanted_base = base_noext(wanted_leaf)
+
+    local orig_get = BookInfoManager.getBookInfo
+    local restored = false
+    local function restore() if not restored then BookInfoManager.getBookInfo = orig_get; restored = true end end
+
+    BookInfoManager.getBookInfo = function(bim, path, want_cover)
+      local req_path = path
+      if type(req_path) == "table" and req_path.path then req_path = req_path.path end
+      local bi = orig_get(bim, path, want_cover)
+      if type(bi) ~= "table" then return bi end
+
+      local req_leaf = leaf(req_path)
+      if base_noext(req_leaf) == wanted_base then
+        local _, filename = util.splitFilePathName(req_path or "")
+        local basename = filemanagerutil.splitFileNameType(filename)
+        if type(basename) == "table" then basename = basename[1] end
+        local author, series, title, sidx = parse_filename(basename or "")
+        if author and author ~= "" and title and title ~= "" then
+          bi.title   = title
+          bi.authors = author
+          bi.ignore_meta = false
+        end
+        if series and series ~= "" then
+          bi.series = series
+          bi.series_index = sidx or 0
+          bi.ignore_meta = false
+        end
+      end
+      return bi
+    end
+
+    local ok, err = xpcall(function() orig_ListMenuItem_update(self) end, debug.traceback)
+    restore()
+    if not ok then error(err, 0) end
+  end
 end
 
 userpatch.registerPatchPluginFunc("coverbrowser", patchCoverBrowser)
