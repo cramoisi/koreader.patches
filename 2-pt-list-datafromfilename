@@ -16,7 +16,7 @@
     - Unicode normalization of spaces, dashes, quotes, ZWSP, BOM.
     - If parsing fails, metadata is left untouched.
     - Series ignored if middle is only marker words (tome, vol, n°, etc.).
-]]
+--]]
 
 local userpatch = require("userpatch")
 
