@@ -1,5 +1,5 @@
 # koreader.patches
-some koreader patches made for my own usage. If prefix PT they need Project title plugin
+some koreader patches made for my own usage. If prefix PT they need Project title plugin (https://github.com/joshuacant/ProjectTitle)
 
 ## 2-pt-list-datafromfilename
 Project title : Don't use metadata but filename to display author, series and title in project title list views
