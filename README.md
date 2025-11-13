@@ -4,7 +4,7 @@ some koreader patches made for my own usage. If prefix PT they need Project titl
 ## 2-pt-list-datafromfilename
 Project title : Don't use metadata but filename to display author, series and title in project title list views
 
-##2-pt-list-disable prbar
+## 2-pt-list-disable-prbar
  Project title : Disable progress bars for finished and new books but keep the marker
 
  ## 2-pt-list-localize-status
