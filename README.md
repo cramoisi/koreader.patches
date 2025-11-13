@@ -11,4 +11,4 @@ Project title : Don't use metadata but filename to display author, series and ti
  Project title : change the language of books status (new, reading, on hold) without changing all koreader UI language
 
 ## 2-reader-filename-header-print-edition
-a modified version of joshuacant 2-reader-header-print-edition (https://github.com/joshuacant/KOReader.patches/blob/main/2-reader-header-print-edition.lua) to use the filename instead of metadata on the odd pages
+A modified version of joshuacant 2-reader-header-print-edition (https://github.com/joshuacant/KOReader.patches/blob/main/2-reader-header-print-edition.lua) to use the filename instead of metadata on the odd pages
