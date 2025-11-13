@@ -1,49 +1,68 @@
 
 --[[
-  Project: Title — Unified Filename Parser (v5)
-  Handles Author, Title, Series, Index from filename using user's schema:
+  Project: Title — Unified Filename Parser (v5.1)
+  Handles Author, Title, Series, Index from filename using user's schema.
 
-    Nom, Prénom - [Série [#|n°]Index - ]Titre.ext
-    Variants:
-      Nom, Prénom - Titre
-      Nom, Prénom - Série - Titre
-      Nom, Prénom - Série n°3 - Titre
-      Nom, Prénom - Série #3 - Titre
-      Nom, Prénom, Titre (fallback comma form)
-
-  Notes:
-    - Never split on internal hyphens (Jean-Philippe, demi-lune, etc.).
-    - Unicode normalization of spaces, dashes, quotes, ZWSP, BOM.
-    - If parsing fails, metadata is left untouched.
-    - Series ignored if middle is only marker words (tome, vol, n°, etc.).
---]]
+  Changes in 5.1:
+    - Fix macOS/iOS decomposed accents (À -> À, É -> É, etc.)
+    - Fix triple apostrophes (curly quotes -> single ')
+    - Remove "T" or "t" prefix from numeric volume markers (T1, T2 -> index only)
+]]
 
 local userpatch = require("userpatch")
 
 local function trim(s) return (s and s:gsub("^%s+",""):gsub("%s+$","")) end
 
--- Normalize Unicode variants to ASCII equivalents
+-- recomposition for decomposed accents (very basic map for macOS NFD)
+local accent_map = {
+  ["À"] = "À", ["Â"] = "Â", ["Ä"] = "Ä",
+  ["É"] = "É", ["È"] = "È", ["Ê"] = "Ê", ["Ë"] = "Ë",
+  ["Î"] = "Î", ["Ï"] = "Ï",
+  ["Ô"] = "Ô", ["Ö"] = "Ö",
+  ["Û"] = "Û", ["Ü"] = "Ü",
+  ["Ç"] = "Ç",
+  ["à"] = "à", ["â"] = "â", ["ä"] = "ä",
+  ["é"] = "é", ["è"] = "è", ["ê"] = "ê", ["ë"] = "ë",
+  ["î"] = "î", ["ï"] = "ï",
+  ["ô"] = "ô", ["ö"] = "ö",
+  ["û"] = "û", ["ü"] = "ü",
+  ["ç"] = "ç",
+}
+
+local function recombine_accents(s)
+  if not s then return s end
+  for k,v in pairs(accent_map) do s = s:gsub(k,v) end
+  return s
+end
+
 local function normalize(s)
   if not s or s == "" then return s end
+  s = recombine_accents(s)
+
   -- remove zero-width, soft hyphen, BOM
   s = s
     :gsub("\226\128[\139-\141]", "") -- ZWSP/ZWNJ/ZWJ
     :gsub("\239\187\191", "") -- BOM
     :gsub("\194\173", "") -- soft hyphen
+
   -- normalize spaces
   s = s
     :gsub("\194\160", " ")
     :gsub("\226\128[\136-\143]", " ") -- thin, narrow, en/em space
+
   -- normalize dashes
   s = s
     :gsub("\226\128[\144-\148]", "-")
     :gsub("\226\136\146", "-")
-  -- normalize apostrophes
-  s = s:gsub("[\226\128\152\226\128\153]", "'")
+
+  -- normalize apostrophes (curly quotes -> single ')
+  s = s:gsub("[\226\128\152\226\128\153\226\128\154\226\128\155]", "'")
+
   -- collapse multiple spaces
   s = s:gsub(" +", " ")
-  -- keep only " - " for separators
+  -- keep only " - " for separators (do not touch internal hyphens)
   s = s:gsub(" +%- +", " - ")
+
   return trim(s)
 end
 
@@ -59,15 +78,24 @@ local function split_on_sds(name)
   return parts
 end
 
-local function ci_cleanup_markers(s)
-  local cleaned = s:gsub("[%s#]*%d+%s*$", "")
-  cleaned = cleaned
-    :gsub("[%s%p]*[Tt][Oo][Mm][Ee]%s*$", "")
-    :gsub("[%s%p]*[Vv][Oo][Ll]%.?%s*$", "")
-    :gsub("[%s%p]*[Ll][Ii][Vv][Rr][Ee]%s*$", "")
-    :gsub("[%s%p]*[Nn][%s%.°Ooº]*%s*$", "")
-  cleaned = cleaned:gsub("%s+$", "")
-  return cleaned
+local function strip_trailing_markers_token(s)
+  -- enlève UNIQUEMENT les marqueurs complets en fin de segment
+  -- tokens reconnus (insensible à la casse) : tome, vol, vol., livre, n, n°, no, nº
+  if not s or s == "" then return s end
+  -- normaliser les points pour la comparaison (mais on garde l’original ensuite)
+  local tokens = {}
+  for tok in s:gmatch("%S+") do table.insert(tokens, tok) end
+  while #tokens > 0 do
+    local last = tokens[#tokens]
+    local norm = last:lower():gsub("%.+$", "") -- supprime les '.' finaux pour comparer (vol. => vol)
+    if norm == "tome" or norm == "vol" or norm == "livre"
+       or norm == "n" or norm == "n°" or norm == "no" or norm == "nº" then
+      table.remove(tokens) -- on retire UNIQUEMENT le token complet
+    else
+      break
+    end
+  end
+  return table.concat(tokens, " ")
 end
 
 local function parse_filename(basename)
@@ -91,16 +119,26 @@ local function parse_filename(basename)
   local series, idx = nil, nil
   if middle and middle ~= "" then
     local raw = middle
+    -- allow T1/T2 as numeric markers as well
+    raw = raw:gsub("([Tt])(%d+)%s*$", "%2")
     local n = tonumber(raw:match("(%d+)%s*$"))
-    if n then
-      local sname = ci_cleanup_markers(raw)
-      sname = trim(sname or "")
-      if sname ~= "" and not sname:lower():match("^[%s%p]*(tome|vol%.?|livre|n[%.°oº]?)%s*$") then
-        series, idx = sname, n
-      end
+--    if n then
+--      local sname = ci_cleanup_markers(raw)
+--      sname = trim(sname or "")
+--      if sname ~= "" and not sname:lower():match("^[%s%p]*(tome|vol%.?|livre|n[%.°oº]?)%s*$") then
+--        series, idx = sname, n
+--      end
+	if n then
+	  -- new: extract prefix before the numeric index to avoid truncating final words
+	  local prefix = raw:match("^(.-)[%s#]*%d+%s*$") or raw
+	  local sname = strip_trailing_markers_token(prefix)
+	  sname = trim(sname or "")
+	  if sname ~= "" and not sname:lower():match("^[%s%p]*(tome|vol%.?|livre|n[%.°oº]?)%s*$") then
+		series, idx = sname, n
+	  end
     else
       if not raw:lower():match("^[%s%p]*(tome|vol%.?|livre|n[%.°oº]?)%s*$") then
-        series = trim(raw)
+		series = strip_trailing_markers_token(trim(raw))
       end
     end
   end
