@@ -48,6 +48,24 @@ local header_settings = G_reader_settings:readSetting("footer")
 local screen_width = Screen:getWidth()
 local screen_height = Screen:getHeight()
 
+-- === helper: récupérer "Auteur - Titre" depuis le nom du fichier (sans extension) ===
+local function get_filename_basename(self)
+    -- On essaie plusieurs chemins selon la version/contexte
+    local doc = (self and self.ui   and self.ui.document)
+             or (self and self.view and self.view.document)
+             or (self and self.document)
+    local p = doc and (doc.file or doc.filepath or doc.path)
+    if not p then return nil end
+
+    -- util est déjà require() plus haut
+    local _, fname = util.splitFilePathName(p)       -- ".../Auteur - Titre.epub" -> "Auteur - Titre.epub"
+    local base, _  = util.splitFileNameSuffix(fname) -- "Auteur - Titre"
+
+    -- Petits nettoyages doux (au cas où)
+    base = base:gsub("_+", " "):gsub("%s%s+", " "):match("^%s*(.-)%s*$")
+    return base
+end
+
 ReaderView.paintTo = function(self, bb, x, y)
     _ReaderView_paintTo_orig(self, bb, x, y)
     if self.render_mode ~= nil then return end -- Show only for epub-likes and never on pdf-likes
@@ -138,7 +156,18 @@ ReaderView.paintTo = function(self, bb, x, y)
         right_corner_header = string.format("%d", pageno)
     end
     if (pages_done > 1) and (pageno % 2 == 0) then
-        centered_header = string.format("%s %s %s", book_author, separator.en_dash, book_title)
+    -- Ancien affichage basé sur les métadonnées :
+    -- centered_header = string.format("%s %s %s", book_author, separator.en_dash, book_title)
+
+    -- Nouveau : utiliser le nom de fichier "Auteur - Titre" (sans extension)
+    local filename_label = get_filename_basename(self)
+    centered_header = string.format("%s", filename_label or "")
+
+    -- (Optionnel) Fallback vers les métadonnées si jamais le chemin n'était pas dispo :
+    -- if centered_header == "" then
+    --     centered_header = string.format("%s %s %s", book_author, separator.en_dash, book_title)
+    -- end
+
     elseif (pages_done > 1) and (pageno % 2 ~= 0) then
         centered_header = string.format("%s", book_chapter)
     elseif pages_done == 1 then
