@@ -7,7 +7,7 @@
     - Fix macOS/iOS decomposed accents (À -> À, É -> É, etc.)
     - Fix triple apostrophes (curly quotes -> single ')
     - Remove "T" or "t" prefix from numeric volume markers (T1, T2 -> index only)
-]]
+--]]
 
 local userpatch = require("userpatch")
 
