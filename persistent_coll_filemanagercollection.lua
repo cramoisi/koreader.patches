@@ -652,20 +652,19 @@ function FileManagerCollection:showPropValueList(prop, prop_values)
         table.insert(prop_item_table, {
             text = value,
             mandatory = #item_idxs,
-            callback = function()
-                UIManager:close(prop_menu)
-                util.tableSetValue(self, value, "match_table", "props", prop)
+			callback = function()
+				UIManager:close(prop_menu)
+				util.tableSetValue(self, value, "match_table", "props", prop)
+
 				-- persist filter
 				local collection_name = self.booklist_menu.path
 				ReadCollection.coll_settings[collection_name].view_filter =
 					util.tableDeepCopy(self.match_table)
 				self.updated_collections[collection_name] = true
-                local item_table = {}
-                for _, idx in ipairs(item_idxs) do
-                    table.insert(item_table, self.booklist_menu.item_table[idx])
-                end
-                self:updateItemTable(item_table)
-            end,
+
+				-- apply filter via match_table (persistent state)
+				self:updateItemTable()
+			end,
         })
     end
     if #prop_item_table > 1 then
