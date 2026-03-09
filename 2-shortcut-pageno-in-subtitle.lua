@@ -1,10 +1,11 @@
+--orig file from https://github.com/zenixlabs/koreader-frankenpatches-public/blob/main/2-pageno-in-subtitle.lua
 --[[ 2-pageno-in-subtitle.lua ]]
 --appends 'page x of y' to filemanager subtitle
 --also uses folder shortcut name instead of path when available
 
 --[ v1.2.0 ]
 --added: pathchooser support
---added: folder shortcut name in subtitle (merged from 2-shortcut-subtitles.lua)
+--added: folder shortcut name in subtitle (merged from 2-shortcut-subtitles.lua from https://github.com/ImSoRight/KOReader.patches/blob/main/2-shortcut-subtitles.lua)
 
 local BD = require("ui/bidi")
 local FileManager = require("apps/filemanager/filemanager")
