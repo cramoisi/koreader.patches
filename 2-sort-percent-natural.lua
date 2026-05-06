@@ -2,7 +2,7 @@
 -- À placer dans : .koreader/patches/
 --
 -- Ajoute un mode de tri :
---   "% – non ouverts – terminés en dernier"
+--   "En cours en premier"
 --
 -- Comportement :
 --   1. Livres EN COURS : triés par % décroissant
@@ -35,7 +35,7 @@ local function readStatus(path)
 end
 
 BookList.collates.percent_natural = {
-    text = _("% – non ouverts+terminés en dernier"),
+    text = _("En cours en premier"),
     menu_order = 10,
     can_collate_mixed = false,
 
