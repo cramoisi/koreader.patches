@@ -36,6 +36,7 @@ BookList.collates.percent_natural = {
 
         local sort_percent
         if opened then
+			--reading : 0.1 to 0.99 / 1.0 = 100%
             if status == "complete" then -- finished
                 sort_percent = 2.0
             elseif status == "abandoned" then -- onhold / dnf
