@@ -1,4 +1,4 @@
--- Tri "En cours → non ouverts+terminés" pour KOReader File Manager
+-- Tri 
 -- À placer dans : .koreader/patches/
 --
 
@@ -26,7 +26,7 @@ local function readStatus(path)
 end
 
 BookList.collates.percent_natural = {
-    text = _("En cours en premier"),
+    text = _("My Sorting mode"),
     menu_order = 10,
     can_collate_mixed = false,
 
